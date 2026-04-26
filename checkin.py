@@ -154,6 +154,7 @@ def get_user_info(client, headers, user_info_url: str):
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
 	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
 	waf_cookies = {}
+	merged_user_cookies = dict(user_cookies)
 
 	if provider_config.needs_waf_cookies():
 		login_url = f'{provider_config.domain}{provider_config.login_path}'
@@ -161,10 +162,25 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 		if not waf_cookies:
 			print(f'[FAILED] {account_name}: Unable to get WAF cookies')
 			return None
+
+		# 用户 secret 中如果混入旧的 WAF cookie，会把浏览器现场抓到的新 WAF cookie 覆盖掉，
+		# 从而在 GitHub Actions / 异地 IP 上重新掉回挑战页或拿到 HTML。
+		# 对需要 WAF 绕过的 provider，这里统一忽略用户提供的同名 WAF cookie，
+		# 始终以 Playwright 刚抓到的值为准。
+		removed_cookie_names = []
+		for cookie_name in provider_config.waf_cookie_names or []:
+			if cookie_name in merged_user_cookies:
+				merged_user_cookies.pop(cookie_name, None)
+				removed_cookie_names.append(cookie_name)
+		if removed_cookie_names:
+			print(
+				f'[INFO] {account_name}: Ignoring user-supplied WAF cookies and using fresh browser values: '
+				f'{", ".join(removed_cookie_names)}'
+			)
 	else:
 		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
 
-	return {**waf_cookies, **user_cookies}
+	return {**merged_user_cookies, **waf_cookies}
 
 
 def execute_check_in(client, account_name: str, provider_config, headers: dict):
